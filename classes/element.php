@@ -11,7 +11,7 @@ use mod_customcert\element as base_element;
 /**
  * Elemento de certificado: logos + assinaturas por região/município.
  *
- * Imagens (enviadas em Admin do site → Custom certificate → Upload image):
+ * Imagens (Admin do site → Plugins → Atividades → Custom certificate → Upload image):
  *   Logos:       sponsor_<set>_*.png
  *   Assinaturas: signature_<set>_*.png
  *
@@ -21,8 +21,6 @@ use mod_customcert\element as base_element;
  */
 class element extends base_element {
 
-    /* ================== Identificação ================== */
-
     public function get_name() {
         return 'regionassets';
     }
@@ -31,33 +29,34 @@ class element extends base_element {
         return get_string('elementtitle', 'customcertelement_regionassets');
     }
 
-    /* ========== Formulário (editor do template) ========== */
-
+    // === Formulário do elemento ===
+    // Assinatura exigida pelo core: 1 parâmetro, sem tipos e sem return type.
     public function render_form_elements($mform) {
-        // Campos padrão do Custom certificate (posx/posy/width/colour etc).
-        if (is_callable('mod_customcert\element::render_form_elements')) {
-            parent::render_form_elements($mform);
+        // 1) Campos padrão do elemento (inclui 'colour', posição, largura, etc).
+        parent::render_form_elements($mform);
+
+        // Garante que 'colour' seja string válida (evita null → deprecations no core).
+        if (method_exists($mform, 'elementExists') && $mform->elementExists('colour')) {
+            $mform->setDefault('colour', '#000000');
         }
 
-        // Campo/shortname do perfil que será usado como chave (ex.: "municipio" ou "city").
+        // 2) Nossos campos.
         $mform->addElement('text', 'ea_profilefield', get_string('f_profilefield', 'customcertelement_regionassets'));
         $mform->setType('ea_profilefield', PARAM_ALPHANUMEXT);
         $mform->setDefault('ea_profilefield', get_config('customcertelement_regionassets', 'profilefield') ?: 'city');
 
-        // Normalizações.
         $mform->addElement('advcheckbox', 'ea_ascii', get_string('f_ascii', 'customcertelement_regionassets'));
         $mform->setDefault('ea_ascii', (int)get_config('customcertelement_regionassets', 'normalizeascii'));
+
         $mform->addElement('advcheckbox', 'ea_lower', get_string('f_lower', 'customcertelement_regionassets'));
         $mform->setDefault('ea_lower', (int)get_config('customcertelement_regionassets', 'normalizelower'));
 
-        // CSV local (prioridade sobre o global) — chave;sponsorset;signset.
         $mform->addElement('textarea', 'ea_mapcsv', get_string('f_mapcsv', 'customcertelement_regionassets'), 'rows="8" cols="80"');
         $mform->setType('ea_mapcsv', PARAM_RAW);
-        if (method_exists($mform, 'addHelpButton')) {
+        if (get_string_manager()->string_exists('f_mapcsv_help', 'customcertelement_regionassets')) {
             $mform->addHelpButton('ea_mapcsv', 'f_mapcsv', 'customcertelement_regionassets');
         }
 
-        // Layout da grade.
         $mform->addElement('text', 'ea_cols', get_string('f_cols', 'customcertelement_regionassets'));
         $mform->setType('ea_cols', PARAM_INT);
         $mform->setDefault('ea_cols', 6);
@@ -81,24 +80,45 @@ class element extends base_element {
         $mform->setDefault('ea_debug', 0);
     }
 
-    /* ========== Persistência dos dados do elemento ========== */
+    /**
+     * Preenche valores do formulário quando estamos editando (padrão do core).
+     */
+    public function definition_after_data($mform) {
+        $d = $this->read_cfg();
+        $mform->setDefault('ea_profilefield', $d->profilefield ?? 'city');
+        $mform->setDefault('ea_ascii',       !empty($d->ascii));
+        $mform->setDefault('ea_lower',       !empty($d->lower));
+        $mform->setDefault('ea_mapcsv',      $d->mapcsv ?? '');
+        $mform->setDefault('ea_cols',        (int)($d->cols ?? 6));
+        $mform->setDefault('ea_logoheight',  (float)($d->logoheight ?? 10.0));
+        $mform->setDefault('ea_gap',         (float)($d->gap ?? 2.0));
+        $mform->setDefault('ea_showsign',    !empty($d->showsign));
+        $mform->setDefault('ea_signheight',  (float)($d->signheight ?? 12.0));
+        $mform->setDefault('ea_debug',       !empty($d->debug));
+    }
 
+    /* ========== Persistência ========== */
+
+    // Deixa o core salvar os campos comuns e chamar save_unique_data().
     public function save_form_elements($data) {
-        $payload = (object) [
+        return parent::save_form_elements($data);
+    }
+
+    // Monta o JSON que vai em customcert_elements.data (padrão do subplugin image).
+    public function save_unique_data($data) {
+        $payload = [
             'profilefield' => trim((string)($data->ea_profilefield ?? 'city')),
-            'ascii'        => !empty($data->ea_ascii),
-            'lower'        => !empty($data->ea_lower),
+            'ascii'        => !empty($data->ea_ascii) ? 1 : 0,
+            'lower'        => !empty($data->ea_lower) ? 1 : 0,
             'mapcsv'       => (string)($data->ea_mapcsv ?? ''),
             'cols'         => (int)($data->ea_cols ?? 6),
             'logoheight'   => (float)($data->ea_logoheight ?? 10.0),
             'gap'          => (float)($data->ea_gap ?? 2.0),
-            'showsign'     => !empty($data->ea_showsign),
+            'showsign'     => !empty($data->ea_showsign) ? 1 : 0,
             'signheight'   => (float)($data->ea_signheight ?? 12.0),
-            'debug'        => !empty($data->ea_debug),
+            'debug'        => !empty($data->ea_debug) ? 1 : 0,
         ];
-        // Serializa no $this->element->data (a base lerá com get_data()).
-        $this->set_data($payload);
-        // Em muitas versões, não é necessário chamar parent::save_form_elements($data).
+        return json_encode($payload, JSON_UNESCAPED_UNICODE);
     }
 
     /* ========== Renderizações ========== */
@@ -114,8 +134,7 @@ class element extends base_element {
     public function render($pdf, $element, $preview = false, $userid = 0) {
         global $USER;
 
-        // Config do elemento (via base -> get_data()).
-        $cfg = $this->get_data();
+        $cfg = $this->read_cfg();
 
         // 1) Usuário alvo.
         $targetid = $userid ?: ($USER->id ?? 0);
@@ -125,10 +144,10 @@ class element extends base_element {
         // 2) Chave (ex.: município) a partir do campo de perfil configurado.
         $key = $this->extract_key_from_user($user, $cfg);
 
-        // 3) Resolver sets via CSV (local → global).
-        list($sponsorset, $signset) = $this->resolve_sets_from_csv($key, $cfg);
+        // 3) Resolver sets via CSV local → global.
+        [$sponsorset, $signset] = $this->resolve_sets_from_csv($key, $cfg);
 
-        // 4) Coletar imagens por prefixo no repositório do Custom certificate.
+        // 4) Coletar imagens por prefixo no repositório do Custom certificate (site).
         $logos = $this->collect_by_prefix("sponsor_{$sponsorset}_", 0);
         $signs = !empty($cfg->showsign) ? $this->collect_by_prefix("signature_{$signset}_", 0) : [];
 
@@ -144,24 +163,40 @@ class element extends base_element {
         }
     }
 
-    /** Resumo textual mostrado na UI. */
     public function render_html($preview = false, $userid = 0) {
-        $d = $this->get_data();
+        $d = $this->read_cfg();
         $pf = isset($d->profilefield) ? $d->profilefield : 'city';
         $cols = isset($d->cols) ? (int)$d->cols : 6;
         $hascsv = !empty($d->mapcsv) || !empty(get_config('customcertelement_regionassets', 'globalmapcsv'));
-        $txt = 'Region assets — campo='.$pf.', cols='.$cols.', csv=' . ($hascsv ? 'sim' : 'não');
-        return $txt;
+        return 'Region assets — campo=' . $pf . ', cols=' . $cols . ', csv=' . ($hascsv ? 'sim' : 'não');
+    }
+
+    public function has_save_and_continue(): bool {
+        return true;
     }
 
     /* ===================== Helpers ===================== */
 
-    /** Serializa em $this->element->data (JSON). DEVE ser public para não reduzir visibilidade. */
-    public function set_data($obj) {
-        $this->element->data = json_encode($obj, JSON_UNESCAPED_UNICODE);
+    private function read_cfg() {
+        $raw = $this->get_data(); // método da base
+        if (is_string($raw) && $raw !== '') {
+            $o = json_decode($raw);
+            if (is_object($o)) { return $o; }
+        }
+        return (object)[
+            'profilefield' => 'city',
+            'ascii'        => 1,
+            'lower'        => 1,
+            'mapcsv'       => '',
+            'cols'         => 6,
+            'logoheight'   => 10.0,
+            'gap'          => 2.0,
+            'showsign'     => 1,
+            'signheight'   => 12.0,
+            'debug'        => 0,
+        ];
     }
 
-    /** Extrai a chave do usuário do campo configurado. */
     protected function extract_key_from_user($user, $cfg) {
         $short = !empty($cfg->profilefield) ? $cfg->profilefield : 'city';
         $val = '';
@@ -170,18 +205,18 @@ class element extends base_element {
         if (property_exists($user, $prop) && $user->{$prop} !== '') {
             $val = (string)$user->{$prop};
         }
+
         if ($val === '') {
             if ($short === 'city' && !empty($user->city)) { $val = (string)$user->city; }
             else if (!empty($user->{$short})) { $val = (string)$user->{$short}; }
         }
 
         $val = trim($val);
-        if (!empty($cfg->ascii)) { $val = core_text::remove_accents($val); }
+        if (!empty($cfg->ascii)) { $val = $this->deaccent($val); }
         if (!empty($cfg->lower)) { $val = core_text::strtolower($val); }
         return $val;
     }
 
-    /** Lê CSV (chave;sponsorset;signset) → array associativo normalizado. */
     protected function parse_csv_map($csv) {
         $out = [];
         $csv = trim((string)$csv);
@@ -191,7 +226,7 @@ class element extends base_element {
         foreach ($lines as $line) {
             $line = trim($line);
             if ($line === '' || $line[0] === '#') { continue; }
-            // Delimitador ; ou , (o mais frequente na linha).
+
             $delim = (substr_count($line, ';') >= substr_count($line, ',')) ? ';' : ',';
             $parts = array_map('trim', explode($delim, $line));
             if (count($parts) < 2) { continue; }
@@ -205,7 +240,6 @@ class element extends base_element {
         return $out;
     }
 
-    /** Resolve [sponsorset, signset] do CSV local → global → fallback (própria chave). */
     protected function resolve_sets_from_csv($key, $cfg) {
         $normkey = $this->norm($key);
         $local = $this->parse_csv_map($cfg->mapcsv ?? '');
@@ -216,7 +250,6 @@ class element extends base_element {
         return [$normkey, $normkey];
     }
 
-    /** Busca imagens site-wide do Custom certificate por prefixo. */
     protected function collect_by_prefix($prefix, $limit = 0) {
         $fs  = get_file_storage();
         $ctx = context_system::instance();
@@ -232,7 +265,6 @@ class element extends base_element {
         return $out;
     }
 
-    /** Desenha uma grade de imagens e retorna o Y final. */
     protected function draw_grid_images($pdf, $x0, $y0, $width, $imgheight, $cols, $gapmm, $files, $debug) {
         $cols = max(1, (int)$cols);
         $gapmm = max(0.0, (float)$gapmm);
@@ -256,6 +288,23 @@ class element extends base_element {
         return $maxy;
     }
 
-    /* ---- utilidades simples ---- */
-    private function norm($s) { return core_text::strtolower(core_text::remove_accents(trim((string)$s))); }
+    private function deaccent($s) {
+        $s = (string)$s;
+        if (class_exists('\Normalizer')) {
+            $n = \Normalizer::normalize($s, \Normalizer::FORM_D);
+            if ($n !== false) {
+                $n = preg_replace('/\p{Mn}+/u', '', $n);
+                if (is_string($n) && $n !== '') { $s = $n; }
+            }
+        }
+        $t = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $s);
+        if ($t !== false && $t !== '') { return $t; }
+        return $s;
+    }
+
+    private function norm($s) {
+        $s = trim((string)$s);
+        $s = $this->deaccent($s);
+        return core_text::strtolower($s);
+    }
 }
