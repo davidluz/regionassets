@@ -30,17 +30,16 @@ class element extends base_element {
     }
 
     // === Formulário do elemento ===
-    // Assinatura exigida pelo core: 1 parâmetro, sem tipos e sem return type.
     public function render_form_elements($mform) {
-        // 1) Campos padrão do elemento (inclui 'colour', posição, largura, etc).
+        // Campos padrão (posx, posy, width, colour, etc) — necessário para o core salvar tudo.
         parent::render_form_elements($mform);
 
-        // Garante que 'colour' seja string válida (evita null → deprecations no core).
+        // Evita 'colour' nulo (PHP 8.1+ deprecations no core).
         if (method_exists($mform, 'elementExists') && $mform->elementExists('colour')) {
             $mform->setDefault('colour', '#000000');
         }
 
-        // 2) Nossos campos.
+        // Nossos campos.
         $mform->addElement('text', 'ea_profilefield', get_string('f_profilefield', 'customcertelement_regionassets'));
         $mform->setType('ea_profilefield', PARAM_ALPHANUMEXT);
         $mform->setDefault('ea_profilefield', get_config('customcertelement_regionassets', 'profilefield') ?: 'city');
@@ -80,9 +79,7 @@ class element extends base_element {
         $mform->setDefault('ea_debug', 0);
     }
 
-    /**
-     * Preenche valores do formulário quando estamos editando (padrão do core).
-     */
+    /** Preenche valores ao editar (padrão do core). */
     public function definition_after_data($mform) {
         $d = $this->read_cfg();
         $mform->setDefault('ea_profilefield', $d->profilefield ?? 'city');
@@ -99,12 +96,11 @@ class element extends base_element {
 
     /* ========== Persistência ========== */
 
-    // Deixa o core salvar os campos comuns e chamar save_unique_data().
     public function save_form_elements($data) {
+        // Deixa o core salvar os campos comuns e chamar save_unique_data().
         return parent::save_form_elements($data);
     }
 
-    // Monta o JSON que vai em customcert_elements.data (padrão do subplugin image).
     public function save_unique_data($data) {
         $payload = [
             'profilefield' => trim((string)($data->ea_profilefield ?? 'city')),
@@ -126,9 +122,12 @@ class element extends base_element {
     public function render_preview($pdf, $element) {
         $pdf->SetFont('helvetica', '', 8);
         $pdf->SetTextColor(90, 90, 90);
-        $pdf->MultiCell($element->width, $element->height,
+        $pdf->MultiCell(
+            max(40, (float)$element->width), // largura mínima só para ver o placeholder
+            0,
             get_string('preview', 'customcertelement_regionassets'),
-            0, 'L', false, 1, $element->posx, $element->posy);
+            0, 'L', false, 1, $this->get_posx(), $this->get_posy()
+        );
     }
 
     public function render($pdf, $element, $preview = false, $userid = 0) {
@@ -141,24 +140,35 @@ class element extends base_element {
         if (!$targetid) { return; }
         $user = core_user::get_user($targetid, '*', MUST_EXIST);
 
-        // 2) Chave (ex.: município) a partir do campo de perfil configurado.
+        // 2) Chave (ex.: município).
         $key = $this->extract_key_from_user($user, $cfg);
 
         // 3) Resolver sets via CSV local → global.
         [$sponsorset, $signset] = $this->resolve_sets_from_csv($key, $cfg);
 
-        // 4) Coletar imagens por prefixo no repositório do Custom certificate (site).
+        // 4) Imagens por prefixo no repositório do Custom certificate (site).
         $logos = $this->collect_by_prefix("sponsor_{$sponsorset}_", 0);
         $signs = !empty($cfg->showsign) ? $this->collect_by_prefix("signature_{$signset}_", 0) : [];
 
+        // === POSIÇÃO: usar helpers do core (igual ao subplugin 'image'). ===
+        $x0 = $this->get_posx();
+        $y0 = $this->get_posy();
+
+        // Largura disponível: se width do elemento for 0, calcula até a margem direita.
+        $width = (float)$this->get_width();
+        if ($width <= 0) {
+            $m = $pdf->getMargins();
+            $width = (float)$pdf->getPageWidth() - (float)$m['right'] - $x0;
+        }
+
         // 5) Desenhar grade (logos) e, abaixo, assinaturas.
-        $y = $element->posy;
+        $y = $y0;
         if (!empty($logos)) {
-            $y = $this->draw_grid_images($pdf, (float)$element->posx, (float)$y, (float)$element->width,
+            $y = $this->draw_grid_images($pdf, $x0, $y, $width,
                 (float)$cfg->logoheight, max(1,(int)$cfg->cols), (float)$cfg->gap, $logos, !empty($cfg->debug));
         }
         if (!empty($signs)) {
-            $this->draw_grid_images($pdf, (float)$element->posx, (float)$y + (float)$cfg->gap, (float)$element->width,
+            $this->draw_grid_images($pdf, $x0, $y + (float)$cfg->gap, $width,
                 (float)$cfg->signheight, max(1,(int)$cfg->cols), (float)$cfg->gap, $signs, !empty($cfg->debug));
         }
     }
@@ -265,12 +275,19 @@ class element extends base_element {
         return $out;
     }
 
+    /** Desenha uma grade de imagens e retorna o Y final (em mm). */
     protected function draw_grid_images($pdf, $x0, $y0, $width, $imgheight, $cols, $gapmm, $files, $debug) {
         $cols = max(1, (int)$cols);
         $gapmm = max(0.0, (float)$gapmm);
         $imgheight = max(1.0, (float)$imgheight);
 
-        $usablew = $width > 0 ? $width : ($pdf->getPageWidth() - $pdf->getMargins()['left'] - $pdf->getMargins()['right'] - $x0);
+        // Se width = 0, usar página - margem direita - x0 (x0 já é absoluto via get_posx()).
+        if ($width <= 0) {
+            $m = $pdf->getMargins();
+            $width = (float)$pdf->getPageWidth() - (float)$m['right'] - (float)$x0;
+        }
+
+        $usablew = $width;
         $cellw = ($usablew - ($cols - 1) * $gapmm) / $cols;
 
         $x = $x0; $y = $y0; $col = 0; $maxy = $y0;
