@@ -31,10 +31,10 @@ class element extends base_element {
 
     // === Formulário do elemento ===
     public function render_form_elements($mform) {
-        // Campos padrão (posx, posy, width, colour, etc) — necessário para o core salvar tudo.
+        // Campos padrão (posx, posy, width, colour, etc).
         parent::render_form_elements($mform);
 
-        // Evita 'colour' nulo (PHP 8.1+ deprecations no core).
+        // Evita avisos do core (colour nulo) em PHP 8.1+.
         if (method_exists($mform, 'elementExists') && $mform->elementExists('colour')) {
             $mform->setDefault('colour', '#000000');
         }
@@ -97,7 +97,6 @@ class element extends base_element {
     /* ========== Persistência ========== */
 
     public function save_form_elements($data) {
-        // Deixa o core salvar os campos comuns e chamar save_unique_data().
         return parent::save_form_elements($data);
     }
 
@@ -123,7 +122,7 @@ class element extends base_element {
         $pdf->SetFont('helvetica', '', 8);
         $pdf->SetTextColor(90, 90, 90);
         $pdf->MultiCell(
-            max(40, (float)$element->width), // largura mínima só para ver o placeholder
+            max(40, (float)$element->width),
             0,
             get_string('preview', 'customcertelement_regionassets'),
             0, 'L', false, 1, $this->get_posx(), $this->get_posy()
@@ -148,9 +147,12 @@ class element extends base_element {
 
         // 4) Imagens por prefixo no repositório do Custom certificate (site).
         $logos = $this->collect_by_prefix("sponsor_{$sponsorset}_", 0);
+        // >>> NOVO: deduplicar logos por hash de conteúdo.
+        $logos = $this->dedupe_files_by_hash($logos);
+
         $signs = !empty($cfg->showsign) ? $this->collect_by_prefix("signature_{$signset}_", 0) : [];
 
-        // === POSIÇÃO: usar helpers do core (igual ao subplugin 'image'). ===
+        // === POSIÇÃO: helpers do core (igual ao subplugin 'image'). ===
         $x0 = $this->get_posx();
         $y0 = $this->get_posy();
 
@@ -161,15 +163,21 @@ class element extends base_element {
             $width = (float)$pdf->getPageWidth() - (float)$m['right'] - $x0;
         }
 
-        // 5) Desenhar grade (logos) e, abaixo, assinaturas.
+        // 5) Render: **assinaturas em cima, logos embaixo** (invertido).
         $y = $y0;
-        if (!empty($logos)) {
-            $y = $this->draw_grid_images($pdf, $x0, $y, $width,
-                (float)$cfg->logoheight, max(1,(int)$cfg->cols), (float)$cfg->gap, $logos, !empty($cfg->debug));
-        }
         if (!empty($signs)) {
-            $this->draw_grid_images($pdf, $x0, $y + (float)$cfg->gap, $width,
-                (float)$cfg->signheight, max(1,(int)$cfg->cols), (float)$cfg->gap, $signs, !empty($cfg->debug));
+            $y = $this->draw_grid_images(
+                $pdf, $x0, $y, $width,
+                (float)$cfg->signheight, max(1,(int)$cfg->cols), (float)$cfg->gap,
+                $signs, !empty($cfg->debug)
+            );
+        }
+        if (!empty($logos)) {
+            $this->draw_grid_images(
+                $pdf, $x0, $y + (float)$cfg->gap, $width,
+                (float)$cfg->logoheight, max(1,(int)$cfg->cols), (float)$cfg->gap,
+                $logos, !empty($cfg->debug)
+            );
         }
     }
 
@@ -188,7 +196,7 @@ class element extends base_element {
     /* ===================== Helpers ===================== */
 
     private function read_cfg() {
-        $raw = $this->get_data(); // método da base
+        $raw = $this->get_data();
         if (is_string($raw) && $raw !== '') {
             $o = json_decode($raw);
             if (is_object($o)) { return $o; }
@@ -275,13 +283,26 @@ class element extends base_element {
         return $out;
     }
 
+    /** Remove arquivos duplicados comparando o hash do conteúdo (SHA1). */
+    protected function dedupe_files_by_hash(array $files): array {
+        $seen = [];
+        $out  = [];
+        foreach ($files as $f) {
+            $hash = sha1($f->get_content());
+            if (!isset($seen[$hash])) {
+                $seen[$hash] = true;
+                $out[] = $f;
+            }
+        }
+        return $out;
+    }
+
     /** Desenha uma grade de imagens e retorna o Y final (em mm). */
     protected function draw_grid_images($pdf, $x0, $y0, $width, $imgheight, $cols, $gapmm, $files, $debug) {
         $cols = max(1, (int)$cols);
         $gapmm = max(0.0, (float)$gapmm);
         $imgheight = max(1.0, (float)$imgheight);
 
-        // Se width = 0, usar página - margem direita - x0 (x0 já é absoluto via get_posx()).
         if ($width <= 0) {
             $m = $pdf->getMargins();
             $width = (float)$pdf->getPageWidth() - (float)$m['right'] - (float)$x0;
