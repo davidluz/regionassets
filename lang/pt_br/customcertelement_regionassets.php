@@ -45,3 +45,22 @@ $string['set_globalmapcsv']     = 'CSV global (fallback)';
 $string['set_globalmapcsv_desc']= 'Usado quando o CSV do elemento estiver vazio. Formato idêntico ao do campo do elemento.';
 
 $string['privacy:metadata'] = 'O subplugin Region assets não armazena dados pessoais.';
+$string['f_mapcsv_help'] =
+'Cole um mapeamento por linha, sem cabeçalho. Delimitador ; ou ,.
+Formato: chave;sponsorset;signset;[sponsorset2]
+Exemplos:
+  demo;demo;demo
+  goiania;centro-oeste_chesp;centro-oeste_chesp
+  itajuba;sudeste_cemig-d;sudeste_cemig-d;sudoeste_outra
+
+O elemento procura imagens enviadas em:
+Administração do site → Custom certificate → Upload image
+
+Padrões de arquivo:
+  Logos: sponsor_<set>_*.png   (também aceita sponsor_<set>.png)
+  Assinaturas: signature_<set>_*.png   (também aceita signature_<set>.png)
+
+A "chave" vem do campo de perfil configurado (padrão: city).
+Se marcar as normalizações, escreva a chave no CSV sem acento e em minúsculas.
+Se a 4ª coluna (sponsorset2) for preenchida, o plugin também buscará logos e assinaturas desse segundo set, removendo duplicatas.';
+

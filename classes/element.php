@@ -11,13 +11,12 @@ use mod_customcert\element as base_element;
 /**
  * Elemento de certificado: logos + assinaturas por região/município.
  *
- * Imagens (Admin do site → Plugins → Atividades → Custom certificate → Upload image):
+ * Imagens (Admin do site → Custom certificate → Upload image):
  *   Logos:       sponsor_<set>_*.png
  *   Assinaturas: signature_<set>_*.png
  *
  * CSV (sem cabeçalho), uma linha por regra:
- *   chave;sponsorset;signset
- * Ex.: demo;demo;demo
+ *   chave;sponsorset;signset;[sponsorset2]
  */
 class element extends base_element {
 
@@ -29,17 +28,13 @@ class element extends base_element {
         return get_string('elementtitle', 'customcertelement_regionassets');
     }
 
-    // === Formulário do elemento ===
     public function render_form_elements($mform) {
-        // Campos padrão (posx, posy, width, colour, etc).
         parent::render_form_elements($mform);
 
-        // Evita avisos do core (colour nulo) em PHP 8.1+.
-        if (method_exists($mform, 'elementExists') && $mform->elementExists('colour')) {
+        if ($mform->elementExists('colour')) {
             $mform->setDefault('colour', '#000000');
         }
 
-        // Nossos campos.
         $mform->addElement('text', 'ea_profilefield', get_string('f_profilefield', 'customcertelement_regionassets'));
         $mform->setType('ea_profilefield', PARAM_ALPHANUMEXT);
         $mform->setDefault('ea_profilefield', get_config('customcertelement_regionassets', 'profilefield') ?: 'city');
@@ -62,24 +57,23 @@ class element extends base_element {
 
         $mform->addElement('text', 'ea_logoheight', get_string('f_logoheight', 'customcertelement_regionassets'));
         $mform->setType('ea_logoheight', PARAM_FLOAT);
-        $mform->setDefault('ea_logoheight', 10.0); // mm
+        $mform->setDefault('ea_logoheight', 10.0);
 
         $mform->addElement('text', 'ea_gap', get_string('f_gap', 'customcertelement_regionassets'));
         $mform->setType('ea_gap', PARAM_FLOAT);
-        $mform->setDefault('ea_gap', 2.0); // mm
+        $mform->setDefault('ea_gap', 2.0);
 
         $mform->addElement('advcheckbox', 'ea_showsign', get_string('f_showsign', 'customcertelement_regionassets'));
         $mform->setDefault('ea_showsign', 1);
 
         $mform->addElement('text', 'ea_signheight', get_string('f_signheight', 'customcertelement_regionassets'));
         $mform->setType('ea_signheight', PARAM_FLOAT);
-        $mform->setDefault('ea_signheight', 12.0); // mm
+        $mform->setDefault('ea_signheight', 12.0);
 
         $mform->addElement('advcheckbox', 'ea_debug', get_string('f_debug', 'customcertelement_regionassets'));
         $mform->setDefault('ea_debug', 0);
     }
 
-    /** Preenche valores ao editar (padrão do core). */
     public function definition_after_data($mform) {
         $d = $this->read_cfg();
         $mform->setDefault('ea_profilefield', $d->profilefield ?? 'city');
@@ -94,8 +88,6 @@ class element extends base_element {
         $mform->setDefault('ea_debug',       !empty($d->debug));
     }
 
-    /* ========== Persistência ========== */
-
     public function save_form_elements($data) {
         return parent::save_form_elements($data);
     }
@@ -105,7 +97,7 @@ class element extends base_element {
             'profilefield' => trim((string)($data->ea_profilefield ?? 'city')),
             'ascii'        => !empty($data->ea_ascii) ? 1 : 0,
             'lower'        => !empty($data->ea_lower) ? 1 : 0,
-            'mapcsv'       => (string)($data->ea_mapcsv ?? ''),
+            'mapcsv'       =>(string)($data->ea_mapcsv ?? ''),
             'cols'         => (int)($data->ea_cols ?? 6),
             'logoheight'   => (float)($data->ea_logoheight ?? 10.0),
             'gap'          => (float)($data->ea_gap ?? 2.0),
@@ -115,8 +107,6 @@ class element extends base_element {
         ];
         return json_encode($payload, JSON_UNESCAPED_UNICODE);
     }
-
-    /* ========== Renderizações ========== */
 
     public function render_preview($pdf, $element) {
         $pdf->SetFont('helvetica', '', 8);
@@ -130,70 +120,85 @@ class element extends base_element {
     }
 
     public function render($pdf, $element, $preview = false, $userid = 0) {
-        global $USER;
+    global $USER;
 
-        $cfg = $this->read_cfg();
+    $cfg = $this->read_cfg();
+    $targetid = $userid ?: ($USER->id ?? 0);
+    if (!$targetid) { return; }
+    $user = core_user::get_user($targetid, '*', MUST_EXIST);
 
-        // 1) Usuário alvo.
-        $targetid = $userid ?: ($USER->id ?? 0);
-        if (!$targetid) { return; }
-        $user = core_user::get_user($targetid, '*', MUST_EXIST);
+    // 1) Extrai a chave (ex.: cidade) do usuário.
+    $key = $this->extract_key_from_user($user, $cfg);
 
-        // 2) Chave (ex.: município).
-        $key = $this->extract_key_from_user($user, $cfg);
-
-        // 3) Resolver sets via CSV local → global.
-        [$sponsorset, $signset] = $this->resolve_sets_from_csv($key, $cfg);
-
-        // 4) Imagens por prefixo no repositório do Custom certificate (site).
-        $logos = $this->collect_by_prefix("sponsor_{$sponsorset}_", 0);
-        // >>> NOVO: deduplicar logos por hash de conteúdo.
-        $logos = $this->dedupe_files_by_hash($logos);
-
-        $signs = !empty($cfg->showsign) ? $this->collect_by_prefix("signature_{$signset}_", 0) : [];
-
-        // === POSIÇÃO: helpers do core (igual ao subplugin 'image'). ===
-        $x0 = $this->get_posx();
-        $y0 = $this->get_posy();
-
-        // Largura disponível: se width do elemento for 0, calcula até a margem direita.
-        $width = (float)$this->get_width();
-        if ($width <= 0) {
-            $m = $pdf->getMargins();
-            $width = (float)$pdf->getPageWidth() - (float)$m['right'] - $x0;
-        }
-
-        // 5) Render: **assinaturas em cima, logos embaixo** (invertido).
-        $y = $y0;
-        if (!empty($signs)) {
-            $y = $this->draw_grid_images(
-                $pdf, $x0, $y, $width,
-                (float)$cfg->signheight, max(1,(int)$cfg->cols), (float)$cfg->gap,
-                $signs, !empty($cfg->debug)
-            );
-        }
-        if (!empty($logos)) {
-            $this->draw_grid_images(
-                $pdf, $x0, $y + (float)$cfg->gap, $width,
-                (float)$cfg->logoheight, max(1,(int)$cfg->cols), (float)$cfg->gap,
-                $logos, !empty($cfg->debug)
-            );
-        }
+    // <<< CORREÇÃO: se a chave estiver vazia, não renderiza nada. >>>
+    if ($key === '' || $key === null) {
+        return;
     }
+
+    // 2) Resolve conjuntos a partir do CSV.
+    [$sponsorset, $signset, $sponsor2] = $this->resolve_sets_from_csv($key, $cfg);
+
+    // 3) Coleta logos/signs apenas se houver set definido (defesa extra).
+    $logos = [];
+    if ($sponsorset !== '') {
+        $logos = $this->collect_by_prefix("sponsor_{$sponsorset}_", 0);
+    }
+    if ($sponsor2 !== '') {
+        $logos2 = $this->collect_by_prefix("sponsor_{$sponsor2}_", 0);
+        $logos  = array_merge($logos, $logos2);
+    }
+    $logos = $this->dedupe_files_by_hash($logos);
+
+    $signs = [];
+    if (!empty($cfg->showsign) && $signset !== '') {
+        $signs = $this->collect_by_prefix("signature_{$signset}_", 0);
+        if ($sponsor2 !== '') {
+            $signs2 = $this->collect_by_prefix("signature_{$sponsor2}_", 0);
+            $signs  = array_merge($signs, $signs2);
+        }
+        $signs = $this->dedupe_files_by_hash($signs);
+    }
+
+    // 4) Medidas e desenho.
+    $x0 = $this->get_posx();
+    $y0 = $this->get_posy();
+    $width = (float)$this->get_width();
+    if ($width <= 0) {
+        $m = $pdf->getMargins();
+        $width = (float)$pdf->getPageWidth() - (float)$m['right'] - $x0;
+    }
+
+    $y = $y0;
+    if (!empty($signs)) {
+        $y = $this->draw_grid_images(
+            $pdf, $x0, $y, $width,
+            (float)$cfg->signheight, max(1,(int)$cfg->cols), (float)$cfg->gap,
+            $signs, !empty($cfg->debug)
+        );
+    }
+    if (!empty($logos)) {
+        $this->draw_grid_images(
+            $pdf, $x0, $y + (float)$cfg->gap, $width,
+            (float)$cfg->logoheight, max(1,(int)$cfg->cols), (float)$cfg->gap,
+            $logos, !empty($cfg->debug)
+        );
+    }
+}
+
 
     public function render_html($preview = false, $userid = 0) {
         $d = $this->read_cfg();
-        $pf = isset($d->profilefield) ? $d->profilefield : 'city';
-        $cols = isset($d->cols) ? (int)$d->cols : 6;
+        $pf = $d->profilefield ?? 'city';
+        $cols = (int)($d->cols ?? 6);
         $hascsv = !empty($d->mapcsv) || !empty(get_config('customcertelement_regionassets', 'globalmapcsv'));
-        return 'Region assets — campo=' . $pf . ', cols=' . $cols . ', csv=' . ($hascsv ? 'sim' : 'não');
+        return 'Region assets — campo='.$pf.', cols='.$cols.', csv='.($hascsv ? 'sim' : 'não');
     }
 
     public function has_save_and_continue(): bool {
         return true;
     }
 
-    /* ===================== Helpers ===================== */
+    /* ==== Helpers ==== */
 
     private function read_cfg() {
         $raw = $this->get_data();
@@ -216,25 +221,27 @@ class element extends base_element {
     }
 
     protected function extract_key_from_user($user, $cfg) {
-        $short = !empty($cfg->profilefield) ? $cfg->profilefield : 'city';
+        $short = $cfg->profilefield ?? 'city';
         $val = '';
-
         $prop = 'profile_field_' . $short;
         if (property_exists($user, $prop) && $user->{$prop} !== '') {
             $val = (string)$user->{$prop};
         }
-
         if ($val === '') {
             if ($short === 'city' && !empty($user->city)) { $val = (string)$user->city; }
-            else if (!empty($user->{$short})) { $val = (string)$user->{$short}; }
+            elseif (!empty($user->{$short})) { $val = (string)$user->{$short}; }
         }
-
         $val = trim($val);
         if (!empty($cfg->ascii)) { $val = $this->deaccent($val); }
         if (!empty($cfg->lower)) { $val = core_text::strtolower($val); }
         return $val;
     }
 
+    /**
+     * CSV → [sponsorset, signset, sponsorset2]
+     * Aceita opcionalmente 4 colunas; se faltar a 3ª, usa sponsorset.
+     * Ex.: chave;patro1;assinset;patro2
+     */
     protected function parse_csv_map($csv) {
         $out = [];
         $csv = trim((string)$csv);
@@ -247,35 +254,52 @@ class element extends base_element {
 
             $delim = (substr_count($line, ';') >= substr_count($line, ',')) ? ';' : ',';
             $parts = array_map('trim', explode($delim, $line));
+
             if (count($parts) < 2) { continue; }
 
             $key        = (string)$parts[0];
             $sponsorset = (string)($parts[1] ?? '');
             $signset    = (string)($parts[2] ?? $sponsorset);
+            $sponsor2   = (string)($parts[3] ?? '');
 
-            $out[$this->norm($key)] = [$this->norm($sponsorset), $this->norm($signset)];
+            $out[$this->norm($key)] = [
+                $this->norm($sponsorset),
+                $this->norm($signset),
+                $this->norm($sponsor2)
+            ];
         }
         return $out;
     }
 
+    /**
+     * Resolve sets: retorna [$sponsor1, $signset, $sponsor2].
+     */
     protected function resolve_sets_from_csv($key, $cfg) {
         $normkey = $this->norm($key);
         $local = $this->parse_csv_map($cfg->mapcsv ?? '');
         if (isset($local[$normkey])) { return $local[$normkey]; }
+
         $globalcsv = (string)get_config('customcertelement_regionassets', 'globalmapcsv');
         $global = $this->parse_csv_map($globalcsv);
         if (isset($global[$normkey])) { return $global[$normkey]; }
-        return [$normkey, $normkey];
+
+        // Fallback: usa a própria chave como sponsor1 e signset; sem sponsor2.
+        return [$normkey, $normkey, ''];
     }
 
     protected function collect_by_prefix($prefix, $limit = 0) {
         $fs  = get_file_storage();
         $ctx = context_system::instance();
         $files = $fs->get_area_files($ctx->id, 'mod_customcert', 'image', 0, 'filename', false);
+
+        // Aceitar "<prefix>.png" ou "<prefix>_*.png"
+        $base = rtrim($prefix, '_');
+        $pattern = '/^' . preg_quote($base, '/') . '(?:_.+)?\.png$/i';
+
         $out = [];
         foreach ($files as $f) {
             $fn = $f->get_filename();
-            if (preg_match('/^' . preg_quote($prefix, '/') . '.+\.png$/i', $fn)) {
+            if (preg_match($pattern, $fn)) {
                 $out[] = $f;
                 if ($limit > 0 && count($out) >= $limit) { break; }
             }
@@ -283,7 +307,6 @@ class element extends base_element {
         return $out;
     }
 
-    /** Remove arquivos duplicados comparando o hash do conteúdo (SHA1). */
     protected function dedupe_files_by_hash(array $files): array {
         $seen = [];
         $out  = [];
@@ -297,34 +320,105 @@ class element extends base_element {
         return $out;
     }
 
-    /** Desenha uma grade de imagens e retorna o Y final (em mm). */
-    protected function draw_grid_images($pdf, $x0, $y0, $width, $imgheight, $cols, $gapmm, $files, $debug) {
-        $cols = max(1, (int)$cols);
-        $gapmm = max(0.0, (float)$gapmm);
-        $imgheight = max(1.0, (float)$imgheight);
+/** Desenha uma grade de imagens e retorna o Y final (em mm). */
+protected function draw_grid_images($pdf, $x0, $y0, $width, $imgheight, $cols, $gapmm, $files, $debug) {
+    $cols = max(1, (int)$cols);
+    $gapmm = max(0.0, (float)$gapmm);
+    $imgheight = max(1.0, (float)$imgheight);
 
-        if ($width <= 0) {
-            $m = $pdf->getMargins();
-            $width = (float)$pdf->getPageWidth() - (float)$m['right'] - (float)$x0;
-        }
-
-        $usablew = $width;
-        $cellw = ($usablew - ($cols - 1) * $gapmm) / $cols;
-
-        $x = $x0; $y = $y0; $col = 0; $maxy = $y0;
-
-        foreach ($files as $file) {
-            $content = $file->get_content();
-            if ($debug) { $pdf->Rect($x, $y, $cellw, $imgheight, 'D'); }
-            $pdf->Image('@' . $content, $x, $y, 0, $imgheight, 'PNG', '', '', true, 300, '', false, false, 0, false, false);
-
-            $maxy = max($maxy, $y + $imgheight);
-            $col++;
-            if ($col >= $cols) { $col = 0; $x = $x0; $y = $maxy + $gapmm; }
-            else { $x += $cellw + $gapmm; }
-        }
-        return $maxy;
+    // Largura útil para a grade.
+    if ($width <= 0) {
+        $m = $pdf->getMargins();
+        $width = (float)$pdf->getPageWidth() - (float)$m['right'] - (float)$x0;
     }
+
+    // Largura de cada célula (gap é o espaço "entre" as células).
+    $cellw = ($width - ($cols - 1) * $gapmm) / $cols;
+
+    // Margem interna lateral dentro da célula (deixa “ar” entre as figuras).
+    // Usa até metade do gap, com limite de 25% da célula para não exagerar.
+    $pad = min($gapmm / 2, $cellw * 0.25);
+
+    $x = $x0;
+    $y = $y0;
+    $col = 0;
+    $rowmaxy = $y0; // altura efetiva usada na linha corrente
+
+    foreach ($files as $file) {
+        $content = $file->get_content();
+
+        // Tenta descobrir proporção da imagem para ajustar quando a largura estouraria a célula.
+        $targetH = $imgheight;
+        $targetW = 0.0; // 0 => largura automática no TCPDF, quando couber.
+
+        $pxw = $pxh = 0;
+        if (function_exists('getimagesizefromstring')) {
+            $info = @getimagesizefromstring($content);
+            if (is_array($info) && !empty($info[0]) && !empty($info[1])) {
+                $pxw = (int)$info[0];
+                $pxh = (int)$info[1];
+            }
+        }
+
+        if ($pxw > 0 && $pxh > 0) {
+            // Largura em mm aguardada se usarmos a altura desejada.
+            $wmm_if_h = $imgheight * ($pxw / $pxh);
+
+            // Se extrapolar a célula disponível (considerando padding), reduzimos a altura
+            // para a imagem caber confortavelmente na largura permitida.
+            $maxw_in_cell = max(1.0, $cellw - 2 * $pad);
+            if ($wmm_if_h > $maxw_in_cell) {
+                $targetH = $maxw_in_cell * ($pxh / $pxw); // ajusta altura para caber na largura
+                $targetW = $maxw_in_cell;                 // agora já sabemos a largura máxima
+            } else {
+                // Cabe com a altura escolhida: deixa largura auto (0) para priorizar a altura.
+                $targetW = 0.0;
+            }
+        }
+
+        // Caixa de depuração da célula.
+        if ($debug) {
+            $pdf->Rect($x, $y, $cellw, $targetH, 'D');
+        }
+
+        // Centraliza a imagem dentro da célula (com padding lateral).
+        $ximg = $x + $pad;
+        if ($targetW > 0) {
+            // Se definimos largura, centraliza direito/esquerdo dentro da célula.
+            $ximg = $x + ($cellw - $targetW) / 2.0;
+        }
+
+        // Desenha. Quando $targetW = 0, o TCPDF usa a altura ($targetH) como referência.
+        $pdf->Image(
+            '@' . $content,
+            $ximg, $y,
+            $targetW,          // 0 = auto (mantém a altura como dominante)
+            $targetH,
+            'PNG', '', '', true, 300, '', false, false, 0, false, false
+        );
+
+        // Atualiza marcadores de coluna/linha.
+        $rowmaxy = max($rowmaxy, $y + $targetH);
+        $col++;
+
+        if ($col >= $cols) {
+            // Próxima linha.
+            $col = 0;
+            $x = $x0;
+            $y = $rowmaxy + $gapmm;
+            $rowmaxy = $y; // reinicia para a nova linha
+        } else {
+            // Próxima célula na mesma linha.
+            $x += $cellw + $gapmm;
+        }
+    }
+
+    // Retorna a coordenada Y final ocupada pela grade.
+    return $rowmaxy;
+}
+
+
+
 
     private function deaccent($s) {
         $s = (string)$s;

@@ -45,3 +45,22 @@ $string['set_globalmapcsv']      = 'Global mapping CSV (fallback)';
 $string['set_globalmapcsv_desc'] = 'Used when the element CSV is empty. Same format as the element field.';
 
 $string['privacy:metadata'] = 'The Region assets subplugin does not store personal data.';
+$string['f_mapcsv_help'] =
+'Paste one mapping per line, no header. Separator ; or ,.
+Format: key;sponsorset;signset;[sponsorset2]
+Examples:
+  demo;demo;demo
+  goiania;centro-oeste_chesp;centro-oeste_chesp
+  itajuba;sudeste_cemig-d;sudeste_cemig-d;sudoeste_other
+
+Images are taken from:
+Site administration → Plugins → Activity modules → Custom certificate → Upload image
+
+Filename patterns:
+  Logos: sponsor_<set>_*.png   (also accepts sponsor_<set>.png)
+  Signatures: signature_<set>_*.png   (also accepts signature_<set>.png)
+
+The "key" comes from the configured user profile field (default: city).
+If you enable normalisation, write the key in the CSV without diacritics and in lowercase.
+If the 4th column (sponsorset2) is provided, the plugin will also load logos and signatures from that second set, deduplicating identical files.';
+
